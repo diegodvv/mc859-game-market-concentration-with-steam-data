@@ -1,0 +1,5 @@
+steamreviews
+jupyter
+pandas
+numpy
+tqdm
