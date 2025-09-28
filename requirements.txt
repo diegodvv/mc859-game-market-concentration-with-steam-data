@@ -3,3 +3,7 @@ jupyter
 pandas
 numpy
 tqdm
+pandas
+matplotlib
+seaborn
+scipy
