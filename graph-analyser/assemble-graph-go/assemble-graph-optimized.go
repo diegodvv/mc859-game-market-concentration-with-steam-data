@@ -99,6 +99,7 @@ func main() {
 	if err := processReviewFiles(gameIDsWithReviewFile); err != nil {
 		log.Fatalf("Error processing review files: %v", err)
 	}
+	runtime.GC()
 	processDuration := time.Since(processStart)
 	fmt.Printf("✅ Processed all %d review files (took %v)\n", len(gameIDsWithReviewFile), processDuration)
 	fmt.Printf("   📊 Data structures built:\n")
@@ -106,30 +107,21 @@ func main() {
 	fmt.Printf("      - Total user nodes: %d\n", len(userNodeIDs))
 	fmt.Printf("      - Total review edges: %d\n\n", len(edgesDetailsByReviewID))
 
-	// Export to JSON
-	fmt.Println("💾 Exporting data to JSON files...")
-	jsonStart := time.Now()
-	if err := exportToJSON(); err != nil {
-		log.Fatalf("Error exporting to JSON: %v", err)
+	// Export data structures one by one to manage memory
+	fmt.Println("� Exporting data to JSON and CSV files...")
+	exportStart := time.Now()
+	if err := exportDataStructures(); err != nil {
+		log.Fatalf("Error exporting data: %v", err)
 	}
-	fmt.Printf("✓ Exported 5 JSON files with '_optimized' suffix (took %v)\n\n", time.Since(jsonStart))
-
-	// Export to CSV
-	fmt.Println("📄 Exporting data to CSV files...")
-	csvStart := time.Now()
-	if err := exportToCSV(); err != nil {
-		log.Fatalf("Error exporting to CSV: %v", err)
-	}
-	fmt.Printf("✓ Exported 6 CSV files (took %v)\n\n", time.Since(csvStart))
+	fmt.Printf("✓ Exported 5 JSON files and 6 CSV files (took %v)\n\n", time.Since(exportStart))
 
 	totalDuration := time.Since(startTime)
 	fmt.Println("🎉 Graph assembly completed successfully!")
 	fmt.Printf("⏱️  Total execution time: %v\n", totalDuration)
 	fmt.Printf("📊 Final statistics:\n")
 	fmt.Printf("   - Games processed: %d\n", len(gameDetailsByGameID))
-	fmt.Printf("   - Users found: %d unique\n", countUniqueUsers())
-	fmt.Printf("   - Reviews processed: %d\n", len(edgesDetailsByReviewID))
-	fmt.Printf("   - Processing rate: %.0f reviews/second\n", float64(len(edgesDetailsByReviewID))/totalDuration.Seconds())
+	fmt.Printf("   - Memory optimization: Data structures freed after export\n")
+	fmt.Printf("   - Files exported: 5 JSON + 6 CSV = 11 total files\n")
 }
 
 // loadGameData loads the filtered apps dictionary from JSON file
@@ -202,7 +194,7 @@ func processReviewFiles(gameIDsWithReviewFile []string) error {
 
 	for i, appID := range gameIDsWithReviewFile {
 		// Progress indicator with percentage and ETA
-		if i%50 == 0 || i == total-1 {
+		if i%200 == 0 || i == total-1 {
 			elapsed := time.Since(startTime)
 			percentage := float64(i+1) / float64(total) * 100
 
@@ -307,33 +299,98 @@ func processReviewFiles(gameIDsWithReviewFile []string) error {
 	return nil
 }
 
-// exportToJSON writes all data structures to JSON files with "_optimized" suffix
-func exportToJSON() error {
-	files := []struct {
-		filename string
-		data     interface{}
-		desc     string
-	}{
-		{"game_node_ids_optimized.json", gameNodeIDs, "game node IDs"},
-		{"user_node_ids_optimized.json", userNodeIDs, "user node IDs"},
-		{"edges_details_by_review_id_optimized.json", edgesDetailsByReviewID, "edge details"},
-		{"edges_review_id_user_id_pairs_by_game_id_optimized.json", edgesReviewIDUserIDPairsByGameID, "game-user pairs"},
-		{"edges_review_id_game_id_pairs_by_user_id_optimized.json", edgesReviewIDGameIDPairsByUserID, "user-game pairs"},
-	}
+// exportDataStructures exports each data structure to both JSON and CSV, then frees memory
+func exportDataStructures() error {
+	totalExports := 5 // number of main data structures
+	currentExport := 0
 
-	for i, file := range files {
-		fmt.Printf("📄 Exporting %s (%d/%d)...\n", file.desc, i+1, len(files))
-		if err := writeJSONFile(file.filename, file.data); err != nil {
-			return fmt.Errorf("failed to export %s: %v", file.filename, err)
-		}
-
-		// Show file size
-		if info, err := os.Stat(file.filename); err == nil {
-			fmt.Printf("   ✓ %s (%.2f MB)\n", file.filename, float64(info.Size())/1024/1024)
-		}
+	// 1. Export game node IDs
+	currentExport++
+	fmt.Printf("📄 Exporting game node IDs (%d/%d)...\n", currentExport, totalExports)
+	if err := writeJSONFile("game_node_ids_optimized.json", gameNodeIDs); err != nil {
+		return fmt.Errorf("failed to export game_node_ids_optimized.json: %v", err)
 	}
+	if err := writeGameNodeIdsCSV(); err != nil {
+		return fmt.Errorf("failed to export game_node_ids.csv: %v", err)
+	}
+	showFileStats("game_node_ids_optimized.json", "game_node_ids.csv")
+	gameNodeIDs = nil // Free memory
+	runtime.GC()
+
+	// 2. Export user node IDs
+	currentExport++
+	fmt.Printf("📄 Exporting user node IDs (%d/%d)...\n", currentExport, totalExports)
+	if err := writeJSONFile("user_node_ids_optimized.json", userNodeIDs); err != nil {
+		return fmt.Errorf("failed to export user_node_ids_optimized.json: %v", err)
+	}
+	if err := writeUserNodeIdsCSV(); err != nil {
+		return fmt.Errorf("failed to export user_node_ids.csv: %v", err)
+	}
+	showFileStats("user_node_ids_optimized.json", "user_node_ids.csv")
+	userNodeIDs = nil // Free memory
+	runtime.GC()
+
+	// 3. Export game details (CSV only, uses existing gameDetailsByGameID)
+	currentExport++
+	fmt.Printf("📄 Exporting game details (%d/%d)...\n", currentExport, totalExports)
+	if err := writeGameDetailsCSV(); err != nil {
+		return fmt.Errorf("failed to export game_details.csv: %v", err)
+	}
+	showFileStats("", "game_details.csv")
+
+	// 4. Export edges details by review ID
+	currentExport++
+	fmt.Printf("📄 Exporting edge details (%d/%d)...\n", currentExport, totalExports)
+	if err := writeJSONFile("edges_details_by_review_id_optimized.json", edgesDetailsByReviewID); err != nil {
+		return fmt.Errorf("failed to export edges_details_by_review_id_optimized.json: %v", err)
+	}
+	if err := writeEdgesDetailsByReviewIdCSV(); err != nil {
+		return fmt.Errorf("failed to export edges_details_by_review_id.csv: %v", err)
+	}
+	showFileStats("edges_details_by_review_id_optimized.json", "edges_details_by_review_id.csv")
+	edgesDetailsByReviewID = nil // Free memory
+	runtime.GC()
+
+	// 5. Export user-game pairs
+	currentExport++
+	fmt.Printf("📄 Exporting user-game pairs (%d/%d)...\n", currentExport, totalExports)
+	if err := writeJSONFile("edges_review_id_game_id_pairs_by_user_id_optimized.json", edgesReviewIDGameIDPairsByUserID); err != nil {
+		return fmt.Errorf("failed to export edges_review_id_game_id_pairs_by_user_id_optimized.json: %v", err)
+	}
+	if err := writeEdgesReviewIdGameIdPairsByUserIdCSV(); err != nil {
+		return fmt.Errorf("failed to export edges_review_id_game_id_pairs_by_user_id.csv: %v", err)
+	}
+	showFileStats("edges_review_id_game_id_pairs_by_user_id_optimized.json", "edges_review_id_game_id_pairs_by_user_id.csv")
+	edgesReviewIDGameIDPairsByUserID = nil // Free memory
+	runtime.GC()
+
+	// 6. Export game-user pairs (final one)
+	fmt.Printf("📄 Exporting game-user pairs (final)...\n")
+	if err := writeJSONFile("edges_review_id_user_id_pairs_by_game_id_optimized.json", edgesReviewIDUserIDPairsByGameID); err != nil {
+		return fmt.Errorf("failed to export edges_review_id_user_id_pairs_by_game_id_optimized.json: %v", err)
+	}
+	if err := writeEdgesReviewIdUserIdPairsByGameIdCSV(); err != nil {
+		return fmt.Errorf("failed to export edges_review_id_user_id_pairs_by_game_id.csv: %v", err)
+	}
+	showFileStats("edges_review_id_user_id_pairs_by_game_id_optimized.json", "edges_review_id_user_id_pairs_by_game_id.csv")
+	edgesReviewIDUserIDPairsByGameID = nil // Free memory
+	runtime.GC()
 
 	return nil
+}
+
+// showFileStats displays file sizes for exported files
+func showFileStats(jsonFile, csvFile string) {
+	if jsonFile != "" {
+		if info, err := os.Stat(jsonFile); err == nil {
+			fmt.Printf("   ✓ %s (%.2f MB)\n", jsonFile, float64(info.Size())/1024/1024)
+		}
+	}
+	if csvFile != "" {
+		if info, err := os.Stat(csvFile); err == nil {
+			fmt.Printf("   ✓ %s (%.2f MB)\n", csvFile, float64(info.Size())/1024/1024)
+		}
+	}
 }
 
 // writeJSONFile is a helper function to write data to a JSON file
@@ -349,36 +406,6 @@ func writeJSONFile(filename string, data interface{}) error {
 
 	if err := encoder.Encode(data); err != nil {
 		return fmt.Errorf("failed to encode JSON to %s: %v", filename, err)
-	}
-
-	return nil
-}
-
-// exportToCSV writes all data structures to CSV files
-func exportToCSV() error {
-	csvExports := []struct {
-		function func() error
-		desc     string
-		filename string
-	}{
-		{writeGameNodeIdsCSV, "game node IDs", "game_node_ids.csv"},
-		{writeUserNodeIdsCSV, "user node IDs", "user_node_ids.csv"},
-		{writeGameDetailsCSV, "game details", "game_details.csv"},
-		{writeEdgesDetailsByReviewIdCSV, "edge details", "edges_details_by_review_id.csv"},
-		{writeEdgesReviewIdUserIdPairsByGameIdCSV, "game-user pairs", "edges_review_id_user_id_pairs_by_game_id.csv"},
-		{writeEdgesReviewIdGameIdPairsByUserIdCSV, "user-game pairs", "edges_review_id_game_id_pairs_by_user_id.csv"},
-	}
-
-	for i, export := range csvExports {
-		fmt.Printf("📊 Exporting %s CSV (%d/%d)...\n", export.desc, i+1, len(csvExports))
-		if err := export.function(); err != nil {
-			return fmt.Errorf("failed to export %s: %v", export.filename, err)
-		}
-
-		// Show file size and row count estimate
-		if info, err := os.Stat(export.filename); err == nil {
-			fmt.Printf("   ✓ %s (%.2f MB)\n", export.filename, float64(info.Size())/1024/1024)
-		}
 	}
 
 	return nil
@@ -638,15 +665,6 @@ func writeEdgesReviewIdGameIdPairsByUserIdCSV() error {
 	}
 
 	return nil
-}
-
-// countUniqueUsers returns the number of unique users in the dataset
-func countUniqueUsers() int {
-	userSet := make(map[string]bool)
-	for _, userID := range userNodeIDs {
-		userSet[userID] = true
-	}
-	return len(userSet)
 }
 
 // formatDuration formats a duration into a human-readable string
