@@ -18,9 +18,34 @@ Go to the `steam-review-scraper` folder and run the `steam-review-downloader.ipy
 
 ### 3. Assemble the graph and do some analysis on it
 
+For memory-efficient processing of large-scale data (50M+ reviews):
+
+```bash
+cd graph-analyser/assemble-graph-database
+make run  # Processes data into SQLite database (30-45 minutes)
+```
+
+This creates a `steam_reviews.db` SQLite DB file that is more suited for data science analysis.
+
+**Option B: Notebook/CSV Approach (Original method)**
+
 Go to the `graph-analyser` folder and run the `assemble-graph.ipynb` notebook. It contains code to read the data obtained from step 1 and 2 into files of nodes and edges.
 
 Finally, use the `analyse-graph.ipynb` file to compute some statistics of the graph and see some visualizations of the node degree distribution and the concentration of reviews per game with a Lorenz curve plot and the Gini coefficient.
+
+### 4. Data Science Analysis
+
+**Python Analysis Pipeline:**
+
+```bash
+# Install analysis requirements
+pip install -r requirements-analysis.txt
+
+# Run automated analysis (works with database or CSV)
+python steam_analysis.py
+```
+
+This generates visualizations, metrics, and genre-based analysis automatically.
 
 
 # Data

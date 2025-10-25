@@ -1,9 +1,32 @@
+# Steam data scraping
 steamreviews
-jupyter
-pandas
-numpy
-tqdm
-pandas
-matplotlib
-seaborn
-scipy
+
+# Jupyter notebook environment
+jupyter>=1.0.0
+jupyterlab>=4.0.0
+
+# Core data science libraries
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data visualization
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# Database connectivity (SQLite is built into Python)
+# For advanced database operations (optional)
+sqlalchemy>=2.0.0
+
+# Progress tracking
+tqdm>=4.65.0
+
+# Memory profiling and optimization (optional)
+psutil>=5.9.0
+
+# Additional analysis libraries (optional but recommended)
+scikit-learn>=1.3.0
+networkx>=3.0
+
+# Interactive plotting (optional)
+plotly>=5.15.0
