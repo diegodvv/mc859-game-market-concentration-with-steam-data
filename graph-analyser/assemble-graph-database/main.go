@@ -31,6 +31,14 @@ type ReviewsData struct {
 	Reviews map[string]Review `json:"reviews"`
 }
 
+type ReviewRecord struct {
+	ReviewID        string
+	GameID          string
+	UserID          string
+	VotedUp         bool
+	ReceivedForFree bool
+}
+
 var db *sql.DB
 
 func main() {
@@ -276,23 +284,101 @@ func findReviewFiles() ([]string, error) {
 }
 
 func processReviewFilesToDB(gameIDs []string) error {
-	// Prepare statements
-	userStmt, err := db.Prepare("INSERT OR IGNORE INTO users (user_id) VALUES (?)")
-	if err != nil {
-		return err
-	}
-	defer userStmt.Close()
+	const batchSize = 1000000
 
-	reviewStmt, err := db.Prepare(`INSERT OR REPLACE INTO reviews 
-		(review_id, game_id, user_id, voted_up, received_for_free) VALUES (?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer reviewStmt.Close()
+	// Batches for users and reviews
+	userBatch := make(map[string]bool) // Using map to avoid duplicates
+	reviewBatch := make([]ReviewRecord, 0, batchSize)
 
 	total := len(gameIDs)
 	reviewCount := 0
 	startTime := time.Now()
+
+	// Function to insert current batches
+	insertBatches := func() error {
+		if len(userBatch) > 0 || len(reviewBatch) > 0 {
+			batchStart := time.Now()
+			tx, err := db.Begin()
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err != nil {
+					tx.Rollback()
+				}
+			}()
+
+			userCount := len(userBatch)
+			reviewBatchCount := len(reviewBatch)
+
+			// Insert users batch
+			if len(userBatch) > 0 {
+				userValues := make([]string, 0, len(userBatch))
+				userArgs := make([]interface{}, 0, len(userBatch))
+
+				for userID := range userBatch {
+					userValues = append(userValues, "(?)")
+					userArgs = append(userArgs, userID)
+				}
+
+				userQuery := fmt.Sprintf("INSERT OR IGNORE INTO users (user_id) VALUES %s",
+					strings.Join(userValues, ","))
+
+				_, err = tx.Exec(userQuery, userArgs...)
+				if err != nil {
+					return fmt.Errorf("error inserting users batch: %v", err)
+				}
+			}
+
+			// Insert reviews batch in chunks to avoid variable limit
+			if len(reviewBatch) > 0 {
+				// Process reviews in smaller chunks to stay within SQLite limits
+				chunkSize := 50 // Each chunk uses 50 * 5 = 250 variables (well under 999 limit)
+
+				for i := 0; i < len(reviewBatch); i += chunkSize {
+					end := i + chunkSize
+					if end > len(reviewBatch) {
+						end = len(reviewBatch)
+					}
+
+					chunk := reviewBatch[i:end]
+					reviewValues := make([]string, 0, len(chunk))
+					reviewArgs := make([]interface{}, 0, len(chunk)*5)
+
+					for _, review := range chunk {
+						reviewValues = append(reviewValues, "(?, ?, ?, ?, ?)")
+						reviewArgs = append(reviewArgs, review.ReviewID, review.GameID,
+							review.UserID, review.VotedUp, review.ReceivedForFree)
+					}
+
+					reviewQuery := fmt.Sprintf(`INSERT OR REPLACE INTO reviews 
+						(review_id, game_id, user_id, voted_up, received_for_free) VALUES %s`,
+						strings.Join(reviewValues, ","))
+
+					_, err = tx.Exec(reviewQuery, reviewArgs...)
+					if err != nil {
+						return fmt.Errorf("error inserting reviews chunk: %v", err)
+					}
+				}
+			}
+
+			err = tx.Commit()
+			if err != nil {
+				return fmt.Errorf("error committing batch transaction: %v", err)
+			}
+
+			batchDuration := time.Since(batchStart)
+			if reviewBatchCount > 0 {
+				fmt.Printf("   💾 Batch inserted: %d users, %d reviews (%.2fs)\n",
+					userCount, reviewBatchCount, batchDuration.Seconds())
+			}
+
+			// Clear batches
+			userBatch = make(map[string]bool)
+			reviewBatch = reviewBatch[:0]
+		}
+		return nil
+	}
 
 	for i, appID := range gameIDs {
 		if i%500 == 0 || i == total-1 {
@@ -332,33 +418,36 @@ func processReviewFilesToDB(gameIDs []string) error {
 		}
 		file.Close()
 
-		// Begin transaction for this file
-		tx, err := db.Begin()
-		if err != nil {
-			continue
-		}
-
+		// Add reviews to batch
 		for reviewID, review := range reviewsData.Reviews {
 			userID := review.Author.SteamID
 
-			// Insert user
-			_, err = tx.Stmt(userStmt).Exec(userID)
-			if err != nil {
-				tx.Rollback()
-				break
-			}
+			// Add user to batch (map automatically handles duplicates)
+			userBatch[userID] = true
 
-			// Insert review
-			_, err = tx.Stmt(reviewStmt).Exec(reviewID, appID, userID, review.VotedUp, review.ReceivedForFree)
-			if err != nil {
-				tx.Rollback()
-				break
-			}
+			// Add review to batch
+			reviewBatch = append(reviewBatch, ReviewRecord{
+				ReviewID:        reviewID,
+				GameID:          appID,
+				UserID:          userID,
+				VotedUp:         review.VotedUp,
+				ReceivedForFree: review.ReceivedForFree,
+			})
 
 			reviewCount++
-		}
 
-		tx.Commit()
+			// Insert batch when it reaches the batch size
+			if len(reviewBatch) >= batchSize {
+				if err := insertBatches(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// Insert any remaining items in the batches
+	if err := insertBatches(); err != nil {
+		return err
 	}
 
 	fmt.Printf("✅ Inserted %d reviews into database\n", reviewCount)
