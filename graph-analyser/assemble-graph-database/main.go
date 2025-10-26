@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type GameDetails map[string]interface{}
@@ -88,58 +89,95 @@ func main() {
 }
 
 func initializeDatabase() error {
-	var err error
-	db, err = sql.Open("sqlite3", "steam_reviews.db")
-	if err != nil {
-		return err
+	// Load environment variables
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using environment variables")
 	}
 
-	// Create tables
+	// Get database connection details from environment variables
+	dbHost := getEnvWithDefault("DB_HOST", "localhost")
+	dbPort := getEnvWithDefault("DB_PORT", "5432")
+	dbUser := getEnvWithDefault("DB_USER", "postgres")
+	dbPassword := getEnvWithDefault("DB_PASSWORD", "postgres")
+	dbName := getEnvWithDefault("DB_NAME", "steam_reviews")
+	dbSSLMode := getEnvWithDefault("DB_SSLMODE", "disable")
+
+	// PostgreSQL connection string
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		dbHost, dbPort, dbUser, dbPassword, dbName, dbSSLMode)
+
+	var err error
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		return fmt.Errorf("failed to open database connection: %v", err)
+	}
+
+	// Test the connection
+	if err = db.Ping(); err != nil {
+		return fmt.Errorf("failed to ping database: %v", err)
+	}
+
+	fmt.Printf("✓ Connected to PostgreSQL database: %s@%s:%s/%s\n", dbUser, dbHost, dbPort, dbName)
+
+	// Create tables (PostgreSQL syntax)
 	schema := `
 	-- Games table
 	CREATE TABLE IF NOT EXISTS games (
-		game_id TEXT PRIMARY KEY,
+		game_id VARCHAR(255) PRIMARY KEY,
 		name TEXT,
 		steam_appid INTEGER,
-		price_currency TEXT,
+		price_currency VARCHAR(10),
 		price_final INTEGER,
 		price_initial INTEGER,
-		categories_ids TEXT, -- JSON array
-		genre_ids TEXT,     -- JSON array
+		categories_ids JSONB, -- JSON array
+		genre_ids JSONB,     -- JSON array
 		release_date TEXT,
 		rating_dejus_rating TEXT,
-		rating_dejus_required_age TEXT
+		rating_dejus_required_age TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
 	-- Users table (only unique users who wrote reviews)
 	CREATE TABLE IF NOT EXISTS users (
-		user_id TEXT PRIMARY KEY
+		user_id VARCHAR(255) PRIMARY KEY,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
 	-- Reviews table (the edges of our graph)
 	CREATE TABLE IF NOT EXISTS reviews (
-		review_id TEXT PRIMARY KEY,
-		game_id TEXT,
-		user_id TEXT,
-		voted_up BOOLEAN,
-		received_for_free BOOLEAN,
-		FOREIGN KEY (game_id) REFERENCES games(game_id),
-		FOREIGN KEY (user_id) REFERENCES users(user_id)
+		review_id VARCHAR(255) PRIMARY KEY,
+		game_id VARCHAR(255) NOT NULL,
+		user_id VARCHAR(255) NOT NULL,
+		voted_up BOOLEAN NOT NULL,
+		received_for_free BOOLEAN NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE,
+		FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 	);
 
 	-- Materialized view for user-game connections (for network analysis)
 	CREATE TABLE IF NOT EXISTS user_game_connections (
-		user_id TEXT,
-		game_id TEXT,
-		review_count INTEGER,
-		positive_reviews INTEGER,
-		free_reviews INTEGER,
-		PRIMARY KEY (user_id, game_id)
+		user_id VARCHAR(255),
+		game_id VARCHAR(255),
+		review_count INTEGER NOT NULL DEFAULT 0,
+		positive_reviews INTEGER NOT NULL DEFAULT 0,
+		free_reviews INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, game_id),
+		FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE,
+		FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 	);
 	`
 
 	_, err = db.Exec(schema)
 	return err
+}
+
+func getEnvWithDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 func loadGameDataToDB() error {
@@ -154,11 +192,22 @@ func loadGameDataToDB() error {
 		return err
 	}
 
-	// Prepare insert statement
-	stmt, err := db.Prepare(`INSERT OR REPLACE INTO games 
+	// Prepare insert statement (PostgreSQL UPSERT syntax)
+	stmt, err := db.Prepare(`INSERT INTO games 
 		(game_id, name, steam_appid, price_currency, price_final, price_initial, 
 		 categories_ids, genre_ids, release_date, rating_dejus_rating, rating_dejus_required_age)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (game_id) DO UPDATE SET
+		name = EXCLUDED.name,
+		steam_appid = EXCLUDED.steam_appid,
+		price_currency = EXCLUDED.price_currency,
+		price_final = EXCLUDED.price_final,
+		price_initial = EXCLUDED.price_initial,
+		categories_ids = EXCLUDED.categories_ids,
+		genre_ids = EXCLUDED.genre_ids,
+		release_date = EXCLUDED.release_date,
+		rating_dejus_rating = EXCLUDED.rating_dejus_rating,
+		rating_dejus_required_age = EXCLUDED.rating_dejus_required_age`)
 	if err != nil {
 		return err
 	}
@@ -206,6 +255,8 @@ func loadGameDataToDB() error {
 			if data, err := json.Marshal(categoryIDs); err == nil {
 				categoriesJSON = string(data)
 			}
+		} else {
+			categoriesJSON = "null"
 		}
 
 		if genres, ok := gameDetails["genres"].([]interface{}); ok {
@@ -220,6 +271,8 @@ func loadGameDataToDB() error {
 			if data, err := json.Marshal(genreIDs); err == nil {
 				genresJSON = string(data)
 			}
+		} else {
+			genresJSON = "null"
 		}
 
 		if releaseDateMap, ok := gameDetails["release_date"].(map[string]interface{}); ok {
@@ -239,8 +292,21 @@ func loadGameDataToDB() error {
 			}
 		}
 
+		// Convert empty JSON strings to null for PostgreSQL
+		var categoriesJSONParam, genresJSONParam interface{}
+		if categoriesJSON == "" {
+			categoriesJSONParam = nil
+		} else {
+			categoriesJSONParam = categoriesJSON
+		}
+		if genresJSON == "" {
+			genresJSONParam = nil
+		} else {
+			genresJSONParam = genresJSON
+		}
+
 		_, err = tx.Stmt(stmt).Exec(gameID, name, steamAppID, priceCurrency, priceFinal, priceInitial,
-			categoriesJSON, genresJSON, releaseDate, ratingDejusRating, ratingDejusRequiredAge)
+			categoriesJSONParam, genresJSONParam, releaseDate, ratingDejusRating, ratingDejusRequiredAge)
 		if err != nil {
 			tx.Rollback()
 			return err
@@ -284,7 +350,7 @@ func findReviewFiles() ([]string, error) {
 }
 
 func processReviewFilesToDB(gameIDs []string) error {
-	const batchSize = 1000000
+	const batchSize = 10000
 
 	// Batches for users and reviews
 	userBatch := make(map[string]bool) // Using map to avoid duplicates
@@ -315,13 +381,15 @@ func processReviewFilesToDB(gameIDs []string) error {
 			if len(userBatch) > 0 {
 				userValues := make([]string, 0, len(userBatch))
 				userArgs := make([]interface{}, 0, len(userBatch))
+				argIndex := 1
 
 				for userID := range userBatch {
-					userValues = append(userValues, "(?)")
+					userValues = append(userValues, fmt.Sprintf("($%d)", argIndex))
 					userArgs = append(userArgs, userID)
+					argIndex++
 				}
 
-				userQuery := fmt.Sprintf("INSERT OR IGNORE INTO users (user_id) VALUES %s",
+				userQuery := fmt.Sprintf("INSERT INTO users (user_id) VALUES %s ON CONFLICT (user_id) DO NOTHING",
 					strings.Join(userValues, ","))
 
 				_, err = tx.Exec(userQuery, userArgs...)
@@ -330,10 +398,10 @@ func processReviewFilesToDB(gameIDs []string) error {
 				}
 			}
 
-			// Insert reviews batch in chunks to avoid variable limit
+			// Insert reviews batch in chunks
 			if len(reviewBatch) > 0 {
-				// Process reviews in smaller chunks to stay within SQLite limits
-				chunkSize := 50 // Each chunk uses 50 * 5 = 250 variables (well under 999 limit)
+				// Process reviews in smaller chunks for better performance
+				chunkSize := 1000 // PostgreSQL can handle larger batches than SQLite
 
 				for i := 0; i < len(reviewBatch); i += chunkSize {
 					end := i + chunkSize
@@ -344,15 +412,23 @@ func processReviewFilesToDB(gameIDs []string) error {
 					chunk := reviewBatch[i:end]
 					reviewValues := make([]string, 0, len(chunk))
 					reviewArgs := make([]interface{}, 0, len(chunk)*5)
+					argIndex := 1
 
 					for _, review := range chunk {
-						reviewValues = append(reviewValues, "(?, ?, ?, ?, ?)")
+						reviewValues = append(reviewValues, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d)",
+							argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4))
 						reviewArgs = append(reviewArgs, review.ReviewID, review.GameID,
 							review.UserID, review.VotedUp, review.ReceivedForFree)
+						argIndex += 5
 					}
 
-					reviewQuery := fmt.Sprintf(`INSERT OR REPLACE INTO reviews 
-						(review_id, game_id, user_id, voted_up, received_for_free) VALUES %s`,
+					reviewQuery := fmt.Sprintf(`INSERT INTO reviews 
+						(review_id, game_id, user_id, voted_up, received_for_free) VALUES %s
+						ON CONFLICT (review_id) DO UPDATE SET
+						game_id = EXCLUDED.game_id,
+						user_id = EXCLUDED.user_id,
+						voted_up = EXCLUDED.voted_up,
+						received_for_free = EXCLUDED.received_for_free`,
 						strings.Join(reviewValues, ","))
 
 					_, err = tx.Exec(reviewQuery, reviewArgs...)
@@ -471,7 +547,7 @@ func createIndexes() error {
 
 	// Create materialized view for user-game connections
 	materializeQuery := `
-	INSERT OR REPLACE INTO user_game_connections (user_id, game_id, review_count, positive_reviews, free_reviews)
+	INSERT INTO user_game_connections (user_id, game_id, review_count, positive_reviews, free_reviews)
 	SELECT 
 		user_id,
 		game_id,
@@ -480,6 +556,10 @@ func createIndexes() error {
 		SUM(CASE WHEN received_for_free THEN 1 ELSE 0 END) as free_reviews
 	FROM reviews 
 	GROUP BY user_id, game_id
+	ON CONFLICT (user_id, game_id) DO UPDATE SET
+		review_count = EXCLUDED.review_count,
+		positive_reviews = EXCLUDED.positive_reviews,
+		free_reviews = EXCLUDED.free_reviews
 	`
 
 	_, err := db.Exec(materializeQuery)
@@ -491,8 +571,8 @@ func showStatistics() error {
 		"Total Games":            "SELECT COUNT(*) FROM games",
 		"Total Users":            "SELECT COUNT(*) FROM users",
 		"Total Reviews":          "SELECT COUNT(*) FROM reviews",
-		"Positive Reviews":       "SELECT COUNT(*) FROM reviews WHERE voted_up = 1",
-		"Free Game Reviews":      "SELECT COUNT(*) FROM reviews WHERE received_for_free = 1",
+		"Positive Reviews":       "SELECT COUNT(*) FROM reviews WHERE voted_up = true",
+		"Free Game Reviews":      "SELECT COUNT(*) FROM reviews WHERE received_for_free = true",
 		"Unique User-Game Pairs": "SELECT COUNT(*) FROM user_game_connections",
 	}
 
@@ -509,7 +589,7 @@ func showStatistics() error {
 }
 
 func createAnalysisExamples() error {
-	examples := `-- Sample SQL queries for data science analysis
+	examples := `-- Sample SQL queries for data science analysis (PostgreSQL syntax)
 
 -- 1. Top 10 games by review count
 SELECT g.name, g.game_id, COUNT(r.review_id) as review_count
@@ -533,20 +613,20 @@ SELECT g.name, g.game_id,
 FROM games g 
 JOIN reviews r ON g.game_id = r.game_id 
 GROUP BY g.game_id, g.name 
-HAVING total_reviews >= 100
+HAVING COUNT(r.review_id) >= 100
 ORDER BY positive_rate DESC 
 LIMIT 10;
 
--- 4. Genre analysis - games count by genre (you'll need to parse JSON)
+-- 4. Genre analysis - games count by genre (PostgreSQL JSON operations)
 SELECT genre_ids, COUNT(*) as game_count
 FROM games 
-WHERE genre_ids IS NOT NULL AND genre_ids != ''
+WHERE genre_ids IS NOT NULL 
 GROUP BY genre_ids 
 ORDER BY game_count DESC;
 
 -- 5. User similarity - users who reviewed similar games (for recommendation systems)
 WITH user_games AS (
-    SELECT user_id, GROUP_CONCAT(game_id) as games
+    SELECT user_id, STRING_AGG(game_id, ',' ORDER BY game_id) as games
     FROM reviews 
     WHERE user_id IN (SELECT user_id FROM reviews GROUP BY user_id HAVING COUNT(*) BETWEEN 10 AND 100)
     GROUP BY user_id
@@ -560,19 +640,51 @@ SELECT r1.game_id as game1, r2.game_id as game2, COUNT(*) as shared_users
 FROM reviews r1 
 JOIN reviews r2 ON r1.user_id = r2.user_id AND r1.game_id < r2.game_id
 GROUP BY r1.game_id, r2.game_id 
-HAVING shared_users >= 10
+HAVING COUNT(*) >= 10
 ORDER BY shared_users DESC;
 
--- 7. Filter games by specific genre and analyze
--- First, you need to extract genre IDs from JSON. For SQLite with JSON support:
+-- 7. Filter games by specific genre and analyze (PostgreSQL JSONB operations)
 SELECT g.name, COUNT(r.review_id) as reviews,
        AVG(CASE WHEN r.voted_up THEN 1.0 ELSE 0.0 END) as positive_rate
 FROM games g
 JOIN reviews r ON g.game_id = r.game_id
-WHERE JSON_EXTRACT(g.genre_ids, '$') LIKE '%"1"%'  -- Replace "1" with actual genre ID
+WHERE g.genre_ids ? '1'  -- Check if genre_ids JSONB array contains '1'
 GROUP BY g.game_id, g.name
-HAVING reviews >= 50
+HAVING COUNT(r.review_id) >= 50
 ORDER BY positive_rate DESC;
+
+-- 8. Advanced genre analysis using JSONB functions
+SELECT 
+    jsonb_array_elements_text(genre_ids) as genre_id,
+    COUNT(DISTINCT g.game_id) as games_count,
+    AVG(CASE WHEN r.voted_up THEN 1.0 ELSE 0.0 END) as avg_positive_rate
+FROM games g
+JOIN reviews r ON g.game_id = r.game_id
+WHERE genre_ids IS NOT NULL
+GROUP BY genre_id
+ORDER BY games_count DESC;
+
+-- 9. Time-based analysis (using created_at timestamps)
+SELECT 
+    DATE_TRUNC('month', created_at) as month,
+    COUNT(*) as reviews_count
+FROM reviews
+GROUP BY month
+ORDER BY month;
+
+-- 10. Market concentration analysis using window functions
+SELECT 
+    game_id,
+    review_count,
+    SUM(review_count) OVER() as total_reviews,
+    ROUND(100.0 * review_count / SUM(review_count) OVER(), 2) as market_share,
+    ROW_NUMBER() OVER(ORDER BY review_count DESC) as rank
+FROM (
+    SELECT game_id, COUNT(*) as review_count
+    FROM reviews
+    GROUP BY game_id
+) ranked_games
+ORDER BY review_count DESC;
 `
 
 	return os.WriteFile("analysis_queries.sql", []byte(examples), 0644)

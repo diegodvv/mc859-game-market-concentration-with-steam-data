@@ -1,3 +1,6 @@
 steam_reviews.db*
 assemble-graph-database
 *.db
+
+# Environment configuration
+.env

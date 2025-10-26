@@ -18,36 +18,64 @@ Go to the `steam-review-scraper` folder and run the `steam-review-downloader.ipy
 
 ### 3. Assemble the graph and do some analysis on it
 
-For memory-efficient processing of large-scale data (50M+ reviews):
+**Option A: PostgreSQL Database Approach (Recommended for large datasets)**
 
-```bash
-cd graph-analyser/assemble-graph-database
-make run  # Processes data into SQLite database (30-45 minutes)
-```
+For memory-efficient processing of large-scale data (50M+ reviews) using PostgreSQL:
 
-This creates a `steam_reviews.db` SQLite DB file that is more suited for data science analysis.
+#### Setup PostgreSQL Database
 
-**Option B: Notebook/CSV Approach (Original method)**
+`cd graph-analyser && docker compose --env-file assemble-graph-database/.env up -d --force-recreate`
 
-Go to the `graph-analyser` folder and run the `assemble-graph.ipynb` notebook. It contains code to read the data obtained from step 1 and 2 into files of nodes and edges.
+2. **Configure and run the assembler**:
+   ```bash
+   cd graph-analyser/assemble-graph-database
+   
+   # Process data into PostgreSQL database (30-45 minutes)
+   make run
+   ```
+
+This creates a `steam_reviews` PostgreSQL database optimized for data science analysis with proper indexing and JSONB support for genre/category data.
 
 Finally, use the `analyse-graph.ipynb` file to compute some statistics of the graph and see some visualizations of the node degree distribution and the concentration of reviews per game with a Lorenz curve plot and the Gini coefficient.
 
 ### 4. Data Science Analysis
 
-**Python Analysis Pipeline:**
+**PostgreSQL-based Analysis Pipeline (Recommended):**
 
-```bash
-# Install analysis requirements
-pip install -r requirements-analysis.txt
+1. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-# Run automated analysis (works with database or CSV)
-python steam_analysis.py
+2. **Run the comprehensive analysis notebook:**
+   ```bash
+   # Start Jupyter
+   jupyter lab
+   
+   # Open and run steam_market_analysis.ipynb
+   # This notebook now connects to PostgreSQL and provides:
+   # - Interactive visualizations and market insights
+   # - Genre-based filtering and analysis using JSONB operations
+   # - User behavior and game popularity metrics
+   # - Market concentration analysis with Gini coefficients
+   # - Custom SQL queries for advanced analysis
+   ```
+
+## Database Configuration
+
+### PostgreSQL Environment Variables
+
+Create a `.env` file in `graph-analyser/assemble-graph-database/` with your database configuration:
+
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_NAME=steam_reviews
+DB_SSLMODE=disable
 ```
 
-This generates visualizations, metrics, and genre-based analysis automatically.
-
-
-# Data
+## Data
 
 The data generated from the `assemble-graph.ipynb` is also available on `https://huggingface.co/datasets/diegodvv/steam-games-reviews-and-users-graph/tree/main`

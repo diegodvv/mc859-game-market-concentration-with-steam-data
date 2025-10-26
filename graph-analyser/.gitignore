@@ -1,2 +1,3 @@
 *.json
 *.csv
+postgres_data/

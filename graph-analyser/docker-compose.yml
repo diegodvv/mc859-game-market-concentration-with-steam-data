@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: steam-postgres-db
+    restart: unless-stopped
+    env_file:
+      - ./assemble-graph-database/.env
+    environment:
+      POSTGRES_DB: ${DB_NAME:-steam_reviews}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      # Persistent data storage
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - steam-network
+
+networks:
+  steam-network:
+    driver: bridge
