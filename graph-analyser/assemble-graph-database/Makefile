@@ -10,7 +10,7 @@ build: deps
 
 # Run the program
 run: build
-	./assemble-graph-database
+	./assemble-graph-database | tee run.log
 
 # Clean build artifacts
 clean:

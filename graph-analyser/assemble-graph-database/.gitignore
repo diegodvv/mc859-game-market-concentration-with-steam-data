@@ -4,3 +4,4 @@ assemble-graph-database
 
 # Environment configuration
 .env
+run.log
