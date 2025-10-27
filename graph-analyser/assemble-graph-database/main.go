@@ -364,88 +364,126 @@ func processReviewFilesToDB(gameIDs []string) error {
 	insertBatches := func() error {
 		if len(userBatch) > 0 || len(reviewBatch) > 0 {
 			batchStart := time.Now()
-			tx, err := db.Begin()
-			if err != nil {
-				return err
-			}
-			defer func() {
-				if err != nil {
-					tx.Rollback()
-				}
-			}()
 
 			userCount := len(userBatch)
 			reviewBatchCount := len(reviewBatch)
 
-			// Insert users batch
-			if len(userBatch) > 0 {
-				userValues := make([]string, 0, len(userBatch))
-				userArgs := make([]interface{}, 0, len(userBatch))
-				argIndex := 1
-
-				for userID := range userBatch {
-					userValues = append(userValues, fmt.Sprintf("($%d)", argIndex))
-					userArgs = append(userArgs, userID)
-					argIndex++
-				}
-
-				userQuery := fmt.Sprintf("INSERT INTO users (user_id) VALUES %s ON CONFLICT (user_id) DO NOTHING",
-					strings.Join(userValues, ","))
-
-				_, err = tx.Exec(userQuery, userArgs...)
+			// Try batch insert first
+			err := func() error {
+				tx, err := db.Begin()
 				if err != nil {
-					return fmt.Errorf("error inserting users batch: %v", err)
+					return err
 				}
-			}
-
-			// Insert reviews batch in chunks
-			if len(reviewBatch) > 0 {
-				// Process reviews in smaller chunks for better performance
-				chunkSize := 1000 // PostgreSQL can handle larger batches than SQLite
-
-				for i := 0; i < len(reviewBatch); i += chunkSize {
-					end := i + chunkSize
-					if end > len(reviewBatch) {
-						end = len(reviewBatch)
+				defer func() {
+					if err != nil {
+						tx.Rollback()
 					}
+				}()
 
-					chunk := reviewBatch[i:end]
-					reviewValues := make([]string, 0, len(chunk))
-					reviewArgs := make([]interface{}, 0, len(chunk)*5)
+				// Insert users batch
+				if len(userBatch) > 0 {
+					userValues := make([]string, 0, len(userBatch))
+					userArgs := make([]interface{}, 0, len(userBatch))
 					argIndex := 1
 
-					for _, review := range chunk {
-						reviewValues = append(reviewValues, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d)",
-							argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4))
-						reviewArgs = append(reviewArgs, review.ReviewID, review.GameID,
-							review.UserID, review.VotedUp, review.ReceivedForFree)
-						argIndex += 5
+					for userID := range userBatch {
+						userValues = append(userValues, fmt.Sprintf("($%d)", argIndex))
+						userArgs = append(userArgs, userID)
+						argIndex++
 					}
 
-					reviewQuery := fmt.Sprintf(`INSERT INTO reviews 
-						(review_id, game_id, user_id, voted_up, received_for_free) VALUES %s
-						ON CONFLICT (review_id) DO UPDATE SET
-						game_id = EXCLUDED.game_id,
-						user_id = EXCLUDED.user_id,
-						voted_up = EXCLUDED.voted_up,
-						received_for_free = EXCLUDED.received_for_free`,
-						strings.Join(reviewValues, ","))
+					userQuery := fmt.Sprintf("INSERT INTO users (user_id) VALUES %s ON CONFLICT (user_id) DO NOTHING",
+						strings.Join(userValues, ","))
 
-					_, err = tx.Exec(reviewQuery, reviewArgs...)
+					_, err = tx.Exec(userQuery, userArgs...)
 					if err != nil {
-						return fmt.Errorf("error inserting reviews chunk: %v", err)
+						return fmt.Errorf("error inserting users batch: %v", err)
 					}
 				}
-			}
 
-			err = tx.Commit()
+				// Insert reviews batch in chunks
+				if len(reviewBatch) > 0 {
+					// Process reviews in smaller chunks for better performance
+					chunkSize := 1000 // PostgreSQL can handle larger batches than SQLite
+
+					for i := 0; i < len(reviewBatch); i += chunkSize {
+						end := i + chunkSize
+						if end > len(reviewBatch) {
+							end = len(reviewBatch)
+						}
+
+						chunk := reviewBatch[i:end]
+						reviewValues := make([]string, 0, len(chunk))
+						reviewArgs := make([]interface{}, 0, len(chunk)*5)
+						argIndex := 1
+
+						for _, review := range chunk {
+							reviewValues = append(reviewValues, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d)",
+								argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4))
+							reviewArgs = append(reviewArgs, review.ReviewID, review.GameID,
+								review.UserID, review.VotedUp, review.ReceivedForFree)
+							argIndex += 5
+						}
+
+						reviewQuery := fmt.Sprintf(`INSERT INTO reviews 
+							(review_id, game_id, user_id, voted_up, received_for_free) VALUES %s
+							ON CONFLICT (review_id) DO UPDATE SET
+							game_id = EXCLUDED.game_id,
+							user_id = EXCLUDED.user_id,
+							voted_up = EXCLUDED.voted_up,
+							received_for_free = EXCLUDED.received_for_free`,
+							strings.Join(reviewValues, ","))
+
+						_, err = tx.Exec(reviewQuery, reviewArgs...)
+						if err != nil {
+							return fmt.Errorf("error inserting reviews chunk: %v", err)
+						}
+					}
+				}
+
+				return tx.Commit()
+			}()
+
+			// If batch insert failed, fallback to individual inserts
 			if err != nil {
-				return fmt.Errorf("error committing batch transaction: %v", err)
+				fmt.Printf("   ⚠️ Batch insert failed (%v), falling back to individual inserts...\n", err)
+
+				// Insert users one by one
+				userStmt, err := db.Prepare("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING")
+				if err != nil {
+					return fmt.Errorf("error preparing user statement: %v", err)
+				}
+				defer userStmt.Close()
+
+				for userID := range userBatch {
+					if _, err := userStmt.Exec(userID); err != nil {
+						fmt.Printf("   ⚠️ Failed to insert user %s: %v\n", userID, err)
+					}
+				}
+
+				// Insert reviews one by one
+				reviewStmt, err := db.Prepare(`INSERT INTO reviews 
+					(review_id, game_id, user_id, voted_up, received_for_free) VALUES ($1, $2, $3, $4, $5)
+					ON CONFLICT (review_id) DO UPDATE SET
+					game_id = EXCLUDED.game_id,
+					user_id = EXCLUDED.user_id,
+					voted_up = EXCLUDED.voted_up,
+					received_for_free = EXCLUDED.received_for_free`)
+				if err != nil {
+					return fmt.Errorf("error preparing review statement: %v", err)
+				}
+				defer reviewStmt.Close()
+
+				for _, review := range reviewBatch {
+					if _, err := reviewStmt.Exec(review.ReviewID, review.GameID, review.UserID, review.VotedUp, review.ReceivedForFree); err != nil {
+						fmt.Printf("   ⚠️ Failed to insert review %s: %v\n", review.ReviewID, err)
+					}
+				}
 			}
 
 			batchDuration := time.Since(batchStart)
 			if reviewBatchCount > 0 {
-				fmt.Printf("   💾 Batch inserted: %d users, %d reviews (%.2fs)\n",
+				fmt.Printf("   💾 Batch processed: %d users, %d reviews (%.2fs)\n",
 					userCount, reviewBatchCount, batchDuration.Seconds())
 			}
 
