@@ -116,6 +116,20 @@ func initializeDatabase() error {
 
 	// Create tables (PostgreSQL syntax)
 	schema := `
+	-- Categories table
+	CREATE TABLE IF NOT EXISTS categories (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Genres table
+	CREATE TABLE IF NOT EXISTS genres (
+		id VARCHAR(255) PRIMARY KEY,
+		name TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
 	-- Games table
 	CREATE TABLE IF NOT EXISTS games (
 		game_id VARCHAR(255) PRIMARY KEY,
@@ -130,6 +144,26 @@ func initializeDatabase() error {
 		rating_dejus_rating TEXT,
 		rating_dejus_required_age TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Junction table for game-category many-to-many relationship
+	CREATE TABLE IF NOT EXISTS game_categories (
+		game_id VARCHAR(255) NOT NULL,
+		category_id INTEGER NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (game_id, category_id),
+		FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE,
+		FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+	);
+
+	-- Junction table for game-genre many-to-many relationship
+	CREATE TABLE IF NOT EXISTS game_genres (
+		game_id VARCHAR(255) NOT NULL,
+		genre_id VARCHAR(255) NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (game_id, genre_id),
+		FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE,
+		FOREIGN KEY (genre_id) REFERENCES genres(id) ON DELETE CASCADE
 	);
 
 	-- Users table (only unique users who wrote reviews)
@@ -187,8 +221,71 @@ func loadGameDataToDB() error {
 		return err
 	}
 
-	// Prepare insert statement (PostgreSQL UPSERT syntax)
-	stmt, err := db.Prepare(`INSERT INTO games 
+	// Maps to store unique categories and genres
+	categoriesMap := make(map[int]string)
+	genresMap := make(map[string]string)
+
+	// First pass: collect all unique categories and genres
+	fmt.Println("   Collecting categories and genres...")
+	for _, gameDetails := range filteredAppDict {
+		if categories, ok := gameDetails["categories"].([]interface{}); ok {
+			for _, category := range categories {
+				if catMap, ok := category.(map[string]interface{}); ok {
+					if id, ok := catMap["id"].(float64); ok {
+						if desc, ok := catMap["description"].(string); ok {
+							categoriesMap[int(id)] = desc
+						}
+					}
+				}
+			}
+		}
+
+		if genres, ok := gameDetails["genres"].([]interface{}); ok {
+			for _, genre := range genres {
+				if genreMap, ok := genre.(map[string]interface{}); ok {
+					if id, ok := genreMap["id"].(string); ok {
+						if desc, ok := genreMap["description"].(string); ok {
+							genresMap[id] = desc
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Insert categories and genres
+	fmt.Printf("   Inserting %d categories and %d genres...\n", len(categoriesMap), len(genresMap))
+
+	// Insert categories
+	categoryStmt, err := db.Prepare(`INSERT INTO categories (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`)
+	if err != nil {
+		return err
+	}
+	defer categoryStmt.Close()
+
+	for id, name := range categoriesMap {
+		_, err := categoryStmt.Exec(id, name)
+		if err != nil {
+			return fmt.Errorf("error inserting category %d: %v", id, err)
+		}
+	}
+
+	// Insert genres
+	genreStmt, err := db.Prepare(`INSERT INTO genres (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`)
+	if err != nil {
+		return err
+	}
+	defer genreStmt.Close()
+
+	for id, name := range genresMap {
+		_, err := genreStmt.Exec(id, name)
+		if err != nil {
+			return fmt.Errorf("error inserting genre %s: %v", id, err)
+		}
+	}
+
+	// Prepare insert statements
+	gameStmt, err := db.Prepare(`INSERT INTO games 
 		(game_id, name, steam_appid, price_currency, price_final, price_initial, 
 		 categories_ids, genre_ids, release_date, rating_dejus_rating, rating_dejus_required_age)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -206,7 +303,19 @@ func loadGameDataToDB() error {
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer gameStmt.Close()
+
+	gameCategoryStmt, err := db.Prepare(`INSERT INTO game_categories (game_id, category_id) VALUES ($1, $2) ON CONFLICT (game_id, category_id) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	defer gameCategoryStmt.Close()
+
+	gameGenreStmt, err := db.Prepare(`INSERT INTO game_genres (game_id, genre_id) VALUES ($1, $2) ON CONFLICT (game_id, genre_id) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	defer gameGenreStmt.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -300,11 +409,41 @@ func loadGameDataToDB() error {
 			genresJSONParam = genresJSON
 		}
 
-		_, err = tx.Stmt(stmt).Exec(gameID, name, steamAppID, priceCurrency, priceFinal, priceInitial,
+		_, err = tx.Stmt(gameStmt).Exec(gameID, name, steamAppID, priceCurrency, priceFinal, priceInitial,
 			categoriesJSONParam, genresJSONParam, releaseDate, ratingDejusRating, ratingDejusRequiredAge)
 		if err != nil {
 			tx.Rollback()
 			return err
+		}
+
+		// Insert game-category relationships
+		if categories, ok := gameDetails["categories"].([]interface{}); ok {
+			for _, category := range categories {
+				if catMap, ok := category.(map[string]interface{}); ok {
+					if id, ok := catMap["id"].(float64); ok {
+						_, err = tx.Stmt(gameCategoryStmt).Exec(gameID, int(id))
+						if err != nil {
+							tx.Rollback()
+							return fmt.Errorf("error inserting game-category relationship: %v", err)
+						}
+					}
+				}
+			}
+		}
+
+		// Insert game-genre relationships
+		if genres, ok := gameDetails["genres"].([]interface{}); ok {
+			for _, genre := range genres {
+				if genreMap, ok := genre.(map[string]interface{}); ok {
+					if id, ok := genreMap["id"].(string); ok {
+						_, err = tx.Stmt(gameGenreStmt).Exec(gameID, id)
+						if err != nil {
+							tx.Rollback()
+							return fmt.Errorf("error inserting game-genre relationship: %v", err)
+						}
+					}
+				}
+			}
 		}
 
 		count++
@@ -570,6 +709,10 @@ func createIndexes() error {
 		"CREATE INDEX IF NOT EXISTS idx_reviews_voted_up ON reviews(voted_up)",
 		"CREATE INDEX IF NOT EXISTS idx_games_genre_ids ON games(genre_ids)",
 		"CREATE INDEX IF NOT EXISTS idx_games_categories_ids ON games(categories_ids)",
+		"CREATE INDEX IF NOT EXISTS idx_game_categories_game_id ON game_categories(game_id)",
+		"CREATE INDEX IF NOT EXISTS idx_game_categories_category_id ON game_categories(category_id)",
+		"CREATE INDEX IF NOT EXISTS idx_game_genres_game_id ON game_genres(game_id)",
+		"CREATE INDEX IF NOT EXISTS idx_game_genres_genre_id ON game_genres(genre_id)",
 	}
 
 	for _, index := range indexes {
@@ -578,6 +721,10 @@ func createIndexes() error {
 		}
 	}
 
+	return nil
+}
+
+func createUserGameConnections() error {
 	// Create materialized view for user-game connections
 	materializeQuery := `
 	INSERT INTO user_game_connections (user_id, game_id, review_count, positive_reviews, free_reviews)
@@ -601,12 +748,16 @@ func createIndexes() error {
 
 func showStatistics() error {
 	queries := map[string]string{
-		"Total Games":            "SELECT COUNT(*) FROM games",
-		"Total Users":            "SELECT COUNT(*) FROM users",
-		"Total Reviews":          "SELECT COUNT(*) FROM reviews",
-		"Positive Reviews":       "SELECT COUNT(*) FROM reviews WHERE voted_up = true",
-		"Free Game Reviews":      "SELECT COUNT(*) FROM reviews WHERE received_for_free = true",
-		"Unique User-Game Pairs": "SELECT COUNT(*) FROM user_game_connections",
+		"Total Games":             "SELECT COUNT(*) FROM games",
+		"Total Categories":        "SELECT COUNT(*) FROM categories",
+		"Total Genres":            "SELECT COUNT(*) FROM genres",
+		"Game-Category Relations": "SELECT COUNT(*) FROM game_categories",
+		"Game-Genre Relations":    "SELECT COUNT(*) FROM game_genres",
+		"Total Users":             "SELECT COUNT(*) FROM users",
+		"Total Reviews":           "SELECT COUNT(*) FROM reviews",
+		"Positive Reviews":        "SELECT COUNT(*) FROM reviews WHERE voted_up = true",
+		"Free Game Reviews":       "SELECT COUNT(*) FROM reviews WHERE received_for_free = true",
+		"Unique User-Game Pairs":  "SELECT COUNT(*) FROM user_game_connections",
 	}
 
 	fmt.Println("\n📊 Database Statistics:")
