@@ -13,10 +13,15 @@ services:
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
-      # Persistent data storage
+      # Persistent data storage so data is not lost
+      # when container stops or is recreated
       - ./postgres_data:/var/lib/postgresql/data
     networks:
       - steam-network
+    deploy:
+      resources:
+        limits:
+          memory: 6G
 
 networks:
   steam-network:
