@@ -35,6 +35,7 @@ Finally, use the `steam_market_analysis.ipynb` file in the folder to compute som
 1. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
+   sudo apt-get install libcairo2-dev pkg-config python3-dev
    ```
 
 2. **Run the comprehensive analysis notebook:**
