@@ -26,31 +26,9 @@ Start a postgres database with `cd graph-analyser/ && docker compose --env-file 
 
 This creates a `steam_reviews` PostgreSQL database optimized for data science analysis with proper indexing and JSONB support for genre/category data.
 
-Finally, use the `steam_market_analysis.ipynb` file in the folder to compute some statistics of the graph and see some visualizations of the node degree distribution and the concentration of reviews per game with a Lorenz curve plot and the Gini coefficient.
-
 ### 4. Data Science Analysis
 
-**PostgreSQL-based Analysis Pipeline (Recommended):**
-
-1. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   sudo apt-get install libcairo2-dev pkg-config python3-dev
-   ```
-
-2. **Run the comprehensive analysis notebook:**
-   ```bash
-   # Start Jupyter
-   jupyter lab
-   
-   # Open and run steam_market_analysis.ipynb
-   # This notebook now connects to PostgreSQL and provides:
-   # - Interactive visualizations and market insights
-   # - Genre-based filtering and analysis using JSONB operations
-   # - User behavior and game popularity metrics
-   # - Market concentration analysis with Gini coefficients
-   # - Custom SQL queries for advanced analysis
-   ```
+Finally, use the notebooks present in the `graph-analyser/` folder to analyse different things, the concentration of reviews per game with a Lorenz curve plot and the Gini coefficient, to the assembly of a projected version of the graph with only game nodes, centrality metrics computation, clustering done with the Leiden algorithm and the export of subgraphs to be visualized with the Gephi software..
 
 ## Data
 

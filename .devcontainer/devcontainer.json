@@ -77,7 +77,7 @@
     "VNC_RESOLUTION": "3000x1600"
   },
 
-	"mounts": ["type=bind,src=/home/lockn/.ssh,dst=/home/vscode/.ssh"]
+	"mounts": ["type=bind,src=/home/lockn/.ssh,dst=/home/vscode/.ssh", "type=bind,src=/mnt/d/Projects/mc859-game-market-concentration-with-steam-data/,dst=/home/lockn/Projects/mc859-game-market-concentration-with-steam-data/hardrive_mount"],
 
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
